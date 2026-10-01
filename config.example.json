@@ -1,0 +1,37 @@
+{
+  "lark": {
+    "appId": "cli_xxxxxxxxxxxxxxxx",
+    "appSecret": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "verificationToken": "",
+    "encryptKey": "",
+    "notifyReceiveId": "",
+    "notifyReceiveIdType": "open_id"
+  },
+  "workspace": {
+    "defaultRoot": "~/project",
+    "projects": {
+      "agy-lark": "~/project/agy-lark",
+      "my-project": "~/project/my-project"
+    }
+  },
+  "agy": {
+    "binary": "agy",
+    "defaultModel": "",
+    "effort": "high",
+    "timeoutMs": 600000,
+    "quota": {
+      "enabled": true,
+      "userAgent": "antigravitycli/1.2.14",
+      "keychainService": "gemini",
+      "keychainAccount": "antigravity",
+      "oauthClientId": "",
+      "oauthClientSecret": ""
+    }
+  },
+  "proxy": {
+    "http": "http://127.0.0.1:7890",
+    "https": "http://127.0.0.1:7890",
+    "all": "",
+    "no": "127.0.0.1,localhost,::1"
+  }
+}

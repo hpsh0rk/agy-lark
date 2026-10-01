@@ -1,0 +1,25 @@
+# Dependencies & Build artifacts
+node_modules/
+dist/
+*.tsbuildinfo
+coverage/
+
+# Local sensitive configuration & secrets
+config.json
+config.*.json
+!config.example.json
+.env
+.env.*
+*.pem
+*.key
+*.cert
+
+# Runtime caches & logs
+.agy-lark/
+*.log
+
+# OS & Editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

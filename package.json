@@ -1,0 +1,38 @@
+{
+  "name": "agy-lark",
+  "version": "1.0.0",
+  "description": "Bridge between Lark (Feishu) and Antigravity CLI (agy)",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "agy-core": "bin/agy-core.js",
+    "agy-lark": "bin/agy-lark.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "verify": "node bin/verify.js",
+    "prelark": "npm run build",
+    "lark": "node bin/agy-lark.js",
+    "prestart": "npm run build",
+    "start": "node --import tsx bin/agy-lark.js",
+    "core": "node --import tsx bin/agy-core.js",
+    "test": "node --test --import tsx test/*.test.ts"
+  },
+  "keywords": [
+    "antigravity",
+    "feishu",
+    "lark",
+    "agy",
+    "agent"
+  ],
+  "author": "sh0rk",
+  "license": "MIT",
+  "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.45.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}
