@@ -35,6 +35,8 @@ test('cards: buildBindCard 渲染下拉选择与操作按钮', () => {
   assert.ok(jsonStr.includes('select_static'), '应包含静态下拉选择组件');
   assert.ok(jsonStr.includes('switch_project'), 'action.value 应包含 switch_project 操作');
   assert.ok(jsonStr.includes('➕ 新建项目'), '应包含新建项目按钮');
+  assert.ok(jsonStr.includes('🔗 关联已有项目'), '应包含关联已有项目按钮');
+  assert.ok(jsonStr.includes('prompt_add_project'), 'action.value 应包含 prompt_add_project 操作');
   assert.ok(jsonStr.includes('🗑️ 删除项目别名'), '应包含删除项目按钮');
 });
 

@@ -35,7 +35,7 @@ export function buildHelpCard(): Record<string, unknown> {
         tag: 'markdown',
         content:
           '### 📋 可用指令一览\n' +
-          '• **/bind**：管理项目与工作区（切换项目、新建项目、删除别名）\n' +
+          '• **/bind**：管理工作区项目（切换项目、关联已有项目、新建项目、删除别名）\n' +
           '• **/model**：查看与切换大模型（附带 Token 消耗统计）\n' +
           '• **/new** 或 **/reset**：重置当前会话，开启全新上下文\n' +
           '• **/pwd**：查看当前会话绑定的物理路径与会话详情\n' +
@@ -115,7 +115,7 @@ export function buildBindCard(params: BindCardParams): Record<string, unknown> {
     });
   }
 
-  // Buttons for New & Delete Project
+  // Buttons for New, Add & Delete Project
   const actionButtons: any[] = [
     {
       tag: 'button',
@@ -125,6 +125,15 @@ export function buildBindCard(params: BindCardParams): Record<string, unknown> {
       },
       type: 'primary',
       value: { action: 'prompt_create_project' },
+    },
+    {
+      tag: 'button',
+      text: {
+        tag: 'plain_text',
+        content: '🔗 关联已有项目',
+      },
+      type: 'default',
+      value: { action: 'prompt_add_project' },
     },
   ];
 
@@ -161,7 +170,7 @@ export function buildBindCard(params: BindCardParams): Record<string, unknown> {
         {
           tag: 'plain_text',
           content:
-            '💡 新建项目默认创建在 ' +
+            '💡 关联已有项目: 回复 "/bind add <别名> <路径>"；新建项目默认在 ' +
             params.defaultRoot +
             ' 下；可通过 "/config default_root <path>" 修改默认创建路径。',
         },

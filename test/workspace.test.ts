@@ -19,6 +19,27 @@ test('WorkspaceManager: 注册与查询项目', () => {
   const projects = ws.listProjects();
   assert.equal(projects['test-proj'], testProjectDir);
 
+  // 非法别名校验
+  assert.throws(() => {
+    ws.registerProject('', testProjectDir);
+  }, /项目名称不合法/);
+
+  assert.throws(() => {
+    ws.registerProject('invalid name with space', testProjectDir);
+  }, /项目名称不合法/);
+
+  // 不存在目录校验
+  assert.throws(() => {
+    ws.registerProject('non-exist', path.join(tmpDir, 'not-found-folder'));
+  }, /目标目录不存在/);
+
+  // 普通文件非目录校验
+  const dummyFile = path.join(tmpDir, 'test-file.txt');
+  fs.writeFileSync(dummyFile, 'hello', 'utf8');
+  assert.throws(() => {
+    ws.registerProject('file-proj', dummyFile);
+  }, /不是目录/);
+
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 

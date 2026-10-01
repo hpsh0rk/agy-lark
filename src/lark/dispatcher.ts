@@ -172,7 +172,17 @@ export class MessageDispatcher {
       }
 
       case '/bind': {
-        if (arg1 === 'create' && arg2) {
+        if (arg1 === 'create') {
+          if (!arg2) {
+            const errCard = buildStreamingCard({
+              text: '用法: `/bind create <项目名>`\n例如: `/bind create my-new-app`',
+              status: 'error',
+              errorMessage: '缺少项目名称参数',
+            });
+            await this.replyCard(chatId, messageId, chatType, errCard);
+            return true;
+          }
+
           try {
             const newPath = this.workspace.createProject(arg2);
             this.sessions.update(session.sessionKey, {
@@ -198,7 +208,54 @@ export class MessageDispatcher {
           return true;
         }
 
-        if (arg1 === 'delete' && arg2) {
+        if (arg1 === 'add' || arg1 === 'link') {
+          const targetPath = parts.slice(3).join(' ').trim();
+          if (!arg2 || !targetPath) {
+            const errCard = buildStreamingCard({
+              text: '用法: `/bind add <项目别名> <已有目录路径>`\n例如: `/bind add my-web ~/project/my-web`',
+              status: 'error',
+              errorMessage: '缺少项目别名或物理路径参数',
+            });
+            await this.replyCard(chatId, messageId, chatType, errCard);
+            return true;
+          }
+
+          try {
+            const resolvedPath = this.workspace.registerProject(arg2, targetPath);
+            this.sessions.update(session.sessionKey, {
+              projectName: arg2,
+              cwd: resolvedPath,
+              conversationId: undefined,
+            });
+            const card = buildBindCard({
+              currentProject: arg2,
+              currentPath: resolvedPath,
+              defaultRoot: this.workspace.getDefaultRoot(),
+              projects: this.workspace.listProjects(),
+            });
+            await this.replyCard(chatId, messageId, chatType, card);
+          } catch (e: any) {
+            const errCard = buildStreamingCard({
+              text: `关联已有项目失败: ${e.message}`,
+              status: 'error',
+              errorMessage: e.hint || e.message,
+            });
+            await this.replyCard(chatId, messageId, chatType, errCard);
+          }
+          return true;
+        }
+
+        if (arg1 === 'delete') {
+          if (!arg2) {
+            const errCard = buildStreamingCard({
+              text: '用法: `/bind delete <项目别名>`\n例如: `/bind delete my-app`',
+              status: 'error',
+              errorMessage: '缺少要删除的项目别名',
+            });
+            await this.replyCard(chatId, messageId, chatType, errCard);
+            return true;
+          }
+
           const removed = this.workspace.removeProject(arg2);
           const currentProj = session.projectName === arg2 ? undefined : session.projectName;
           if (session.projectName === arg2) {

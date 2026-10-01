@@ -274,6 +274,15 @@ async function dispatchCardAction(
     };
   }
 
+  if (actionName === 'prompt_add_project') {
+    return {
+      toast: {
+        type: 'info',
+        content: '请直接回复: /bind add <项目别名> <已有目录路径> (例如: /bind add my-web ~/project/my-web)',
+      },
+    };
+  }
+
   if (actionName === 'prompt_delete_project') {
     return {
       toast: {

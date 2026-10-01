@@ -84,12 +84,26 @@ export class WorkspaceManager {
   }
 
   public registerProject(name: string, projectPath: string): string {
+    if (!name || !/^[a-zA-Z0-9_\-\.]+$/.test(name)) {
+      throw new BridgeError(
+        'E_INVALID_WORKSPACE',
+        `项目名称不合法: "${name}"`,
+        '项目名称只能包含字母、数字、下划线、中划线和点'
+      );
+    }
     const resolved = this.expandPath(projectPath);
     if (!fs.existsSync(resolved)) {
       throw new BridgeError(
         'E_INVALID_WORKSPACE',
         `目标目录不存在: ${resolved}`,
         '请确认路径是否输入正确并已创建对应文件夹'
+      );
+    }
+    if (!fs.statSync(resolved).isDirectory()) {
+      throw new BridgeError(
+        'E_INVALID_WORKSPACE',
+        `目标路径不是目录: ${resolved}`,
+        '项目工作区必须是文件夹目录，不能是普通文件'
       );
     }
     this.config.projects[name] = resolved;

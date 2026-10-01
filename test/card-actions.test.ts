@@ -73,7 +73,15 @@ test('card-actions: bind_card 卡片含项目下拉与新建/删除按钮', asyn
   const json = JSON.stringify(res.card!.data);
   assert.ok(json.includes('switch_project'), '绑定卡片应包含 switch_project 回传值');
   assert.ok(json.includes('prompt_create_project'), '绑定卡片应包含新建项目按钮');
+  assert.ok(json.includes('prompt_add_project'), '绑定卡片应包含关联已有项目按钮');
   assert.ok(json.includes('prompt_delete_project'), '绑定卡片应包含删除项目按钮');
+});
+
+test('card-actions: prompt_add_project 弹出操作指导 toast', async () => {
+  const { ctx } = makeCtx();
+  const res = await handleCardAction(cardEvent('prompt_add_project'), ctx);
+  assert.equal(res.toast?.type, 'info');
+  assert.ok(res.toast?.content.includes('/bind add'), 'toast 应包含 /bind add 说明');
 });
 
 test('card-actions: 卡片操作复用消息会话，不创建影子会话', async () => {
