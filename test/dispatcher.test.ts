@@ -12,7 +12,8 @@ function setupDispatcher() {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-disp-test-'));
   const configPath = path.join(tmpDir, 'workspace.json');
   const workspace = new WorkspaceManager(configPath);
-  const sessions = new SessionStore();
+  workspace.setDefaultRoot(tmpDir);
+  const sessions = new SessionStore(path.join(tmpDir, 'sessions.json'));
 
   const replies: any[] = [];
   const mockClient: any = {
@@ -27,13 +28,20 @@ function setupDispatcher() {
           };
         },
       },
+      messageResource: {
+        get: async (req: any) => ({
+          writeFile: async (dest: string) => {
+            fs.writeFileSync(dest, 'mock-image-data');
+          },
+        }),
+      },
     },
   };
 
   const config: BridgeConfig = {
     lark: { appId: 'test_app', appSecret: 'test_secret' },
     workspace: { defaultRoot: tmpDir, projects: {} },
-    agy: { binary: 'echo', effort: 'high', timeoutMs: 5000 },
+    agy: { binary: '/bin/echo', effort: 'high', timeoutMs: 5000 },
   };
 
   const dispatcher = new MessageDispatcher(mockClient, config, workspace, sessions);
@@ -145,3 +153,66 @@ test('dispatcher: /bind delete 缺少参数返回用法提示卡片', async () =
 
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
+
+async function waitForFile(filePath: string, timeoutMs = 2000): Promise<boolean> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (fs.existsSync(filePath)) return true;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  return fs.existsSync(filePath);
+}
+
+test('dispatcher: 收到富文本 post 图文混排消息，自动下载图片并触发执行', async () => {
+  const { dispatcher, replies, tmpDir } = setupDispatcher();
+
+  const postEvent = {
+    message: {
+      message_id: 'om_post_001',
+      chat_id: 'oc_test_chat',
+      chat_type: 'p2p',
+      message_type: 'post',
+      content: JSON.stringify({
+        content: [
+          [{ tag: 'img', image_key: 'img_test_123' }],
+          [{ tag: 'text', text: '总结这张图' }],
+        ],
+      }),
+    },
+  };
+
+  await dispatcher.handleMessage(postEvent);
+
+  const downloadedFile = path.join(tmpDir, '.agy-images', 'om_post_001_img_test_123.png');
+  const found = await waitForFile(downloadedFile);
+  assert.ok(found, '图片应被正确下载');
+
+  await new Promise((r) => setTimeout(r, 200));
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+});
+
+test('dispatcher: 收到纯图片消息，自动下载并赋予默认提示词触发执行', async () => {
+  const { dispatcher, tmpDir } = setupDispatcher();
+
+  const imageEvent = {
+    message: {
+      message_id: 'om_img_002',
+      chat_id: 'oc_test_chat',
+      chat_type: 'p2p',
+      message_type: 'image',
+      content: JSON.stringify({
+        image_key: 'img_pure_456',
+      }),
+    },
+  };
+
+  await dispatcher.handleMessage(imageEvent);
+
+  const downloadedFile = path.join(tmpDir, '.agy-images', 'om_img_002_img_pure_456.png');
+  const found = await waitForFile(downloadedFile);
+  assert.ok(found, '纯图片消息中的图片应被下载');
+
+  await new Promise((r) => setTimeout(r, 200));
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+});
+

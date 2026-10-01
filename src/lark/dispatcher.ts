@@ -7,6 +7,8 @@ import { fetchAvailableModels } from '../core/models.js';
 import type { BridgeConfig, SessionEntry } from '../core/types.js';
 import { buildHelpCard, buildBindCard, buildModelCard, buildStreamingCard } from './cards.js';
 import { uploadImageToLark } from './uploader.js';
+import { parseLarkMessage } from './parser.js';
+import { downloadImageFromLark } from './downloader.js';
 
 export class MessageDispatcher {
   private client: lark.Client;
@@ -63,19 +65,13 @@ export class MessageDispatcher {
     const chatType = message.chat_type === 'group' ? 'group' : 'p2p';
     const threadId = message.thread_id || message.root_id || (chatType === 'group' ? messageId : undefined);
 
-    let rawText = '';
-    try {
-      const parsed = JSON.parse(message.content || '{}');
-      rawText = parsed.text || '';
-    } catch {
-      rawText = message.content || '';
-    }
+    const { text: extractedText, imageKeys } = parseLarkMessage(message);
 
     // Strip bot mention markers e.g. "@_user_1 "
-    const cleanText = rawText.replace(/@_user_\d+\s*/g, '').trim();
-    if (!cleanText) {
-      // 纯 @机器人 / 图片 / 表情等无文本消息：没有内容可交给 agy，显式记录后跳过（不是错误）
-      console.log(`[agy-lark] 忽略无文本消息: message_id=${messageId}`);
+    const cleanText = extractedText.replace(/@_user_\d+\s*/g, '').trim();
+    if (!cleanText && imageKeys.length === 0) {
+      // 纯 @机器人 / 表情等无有效内容消息：显式记录后跳过（不是错误）
+      console.log(`[agy-lark] 忽略空内容消息: message_id=${messageId}`);
       return;
     }
 
@@ -100,16 +96,48 @@ export class MessageDispatcher {
       defaultCwd: this.workspace.getDefaultRoot(),
     });
 
-    // Check commands
-    if (cleanText.startsWith('/')) {
+    // Check commands (only plain text commands without media)
+    if (cleanText.startsWith('/') && imageKeys.length === 0) {
       const handled = await this.handleCommand(cleanText, messageId, chatId, chatType, threadId, session);
       if (handled) return;
     }
 
-    // Regular prompt execution - 异步启动，避免阻塞 WebSocket 事件循环导致飞书超时重投
-    this.executePrompt(cleanText, messageId, chatId, chatType, threadId, session).catch((err) => {
+    // Regular prompt execution with multimodal support - 异步启动，避免阻塞 WebSocket 事件循环导致飞书超时重投
+    this.executePromptWithMedia(cleanText, imageKeys, messageId, chatId, chatType, threadId, session).catch((err) => {
       console.error(`[agy-lark] Prompt 执行异步异常 [${messageId}]:`, err);
     });
+  }
+
+  private async executePromptWithMedia(
+    text: string,
+    imageKeys: string[],
+    messageId: string,
+    chatId: string,
+    chatType: 'p2p' | 'group',
+    threadId: string | undefined,
+    session: SessionEntry
+  ): Promise<void> {
+    let finalPrompt = text;
+
+    if (imageKeys.length > 0) {
+      const downloadedPaths: string[] = [];
+      for (const imgKey of imageKeys) {
+        try {
+          const imgPath = await downloadImageFromLark(this.client, messageId, imgKey, session.cwd);
+          downloadedPaths.push(imgPath);
+        } catch (err: any) {
+          console.error(`[agy-lark] 图片下载失败 [messageId=${messageId}, key=${imgKey}]:`, err?.message || err);
+        }
+      }
+
+      if (downloadedPaths.length > 0) {
+        const imageList = downloadedPaths.map((p) => `- ${p}`).join('\n');
+        const userPrompt = text || '请分析并总结这张图片的内容。';
+        finalPrompt = `【用户随附图片已保存至本地】:\n${imageList}\n请优先调用 view_file 工具查看并结合图片内容回答。\n\n${userPrompt}`;
+      }
+    }
+
+    return this.executePrompt(finalPrompt, messageId, chatId, chatType, threadId, session);
   }
 
   private async replyCard(

@@ -2,21 +2,20 @@
 
 <!-- guardian:auto-generated -->
 > 本文档是跨智能体（Pi / Codex / Claude / Cursor / 人类）无缝接力的单一事实来源。
-> 生成时间: 2026-10-01 13:54:00
+> 生成时间: 2026-10-01 14:22:00
 > 分支/Worktree: main
-> 关联 Spec: specs/008-bind-existing-project.md
-> 当前阶段/进度: 7 / 7 (100%)
+> 关联 Spec: specs/009-multimodal-image-input.md
+> 当前阶段/进度: 6 / 6 (100%)
 
 ---
 
 ## 1. 当前进展状态 (Current State)
-- [x] AC1: `WorkspaceManager.registerProject(name, path)` 对非法 `name`（空或含特殊字符）抛出 `E_INVALID_WORKSPACE` 错误。
-- [x] AC2: 在 `dispatcher.ts` 中输入 `/bind add <name> <path>` 或 `/bind link <name> <path>`，成功注册项目、更新会话 `cwd`/`projectName` 并重置 `conversationId`，返回最新的绑定卡片。
-- [x] AC3: 目标路径不存在或别名不合法时，返回结构化错误卡片，不抛未捕获异常。
-- [x] AC4: 参数缺失时输出清晰的语法提示卡片。
-- [x] AC5: `buildBindCard` 增加「🔗 关联已有项目」按钮，点击返回指导输入指令的 toast。
-- [x] AC6: `buildHelpCard`、`README.md`、`AGENT_RUNBOOK.md` 包含 `/bind add` 说明。
-- [x] AC7: 所有单元测试与构建门禁通过 (`npm test`, `npm run build`)。
+- [x] AC1: `parseLarkMessage` 能正确解析 `text`、`post`（图文混排提取文本与 image_key）、`image`（提取 image_key 并赋默认提示词）。
+- [x] AC2: `downloadImageFromLark` 能成功将指定消息中的图片下载到本地磁盘并返回有效绝对路径。
+- [x] AC3: `MessageDispatcher` 收到 `post` 图文消息时，不再报错丢弃，而是自动下载图片、组装提示词并交给 `agy` 执行流式卡片回复。
+- [x] AC4: `MessageDispatcher` 收到纯 `image` 消息时，自动下载并以图像分析默认提示词触发回复。
+- [x] AC5: 图片下载失败时不导致程序崩溃，降级为普通文本或错误提示。
+- [x] AC6: 补充单元测试且全量门禁 (`npm test`, `npm run build`) 100% 通过。
 
 ---
 
