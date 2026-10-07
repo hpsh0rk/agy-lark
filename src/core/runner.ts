@@ -1,7 +1,103 @@
+import path from 'node:path';
+import os from 'node:os';
+import fs from 'node:fs';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { BridgeError } from './errors.js';
 import { ImageHarvester } from './image-harvester.js';
-import type { AgyRunOptions, AgyRunResult, AgyUsage } from './types.js';
+import { runPi } from './pi-runner.js';
+import type { AgyRunOptions, AgyRunResult, AgyUsage, AgentEngine, BridgeConfig } from './types.js';
+
+export { runPi };
+
+/**
+ * 寻找可执行的 agy 路径（支持显式配置、~/.local/bin/agy 以及 PATH 查找）。
+ */
+export function resolveAgyBinary(customBinary?: string): string {
+  if (customBinary && customBinary !== 'agy') {
+    return customBinary;
+  }
+  const localBin = path.join(os.homedir(), '.local', 'bin', 'agy');
+  if (fs.existsSync(localBin)) {
+    return localBin;
+  }
+  return 'agy';
+}
+
+/**
+ * 确保子进程环境变量补全 Node 及本地 CLI 路径。
+ */
+export function buildAgyEnvironment(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  const delimiter = path.delimiter;
+  const paths = (env.PATH || '').split(delimiter);
+  const candidateDirs = [
+    '/opt/homebrew/bin',
+    '/usr/local/bin',
+    path.join(os.homedir(), '.local', 'bin'),
+  ];
+  for (const dir of candidateDirs) {
+    if (!paths.includes(dir) && fs.existsSync(dir)) {
+      paths.unshift(dir);
+    }
+  }
+  env.PATH = paths.join(delimiter);
+  return env;
+}
+
+/**
+ * 将工具调用及其参数转换为面向用户的简要行动描述。
+ */
+export function summarizeToolCall(toolName?: string, parameters?: Record<string, unknown>): string {
+  if (!toolName) return '思考与分析需求';
+  if (!parameters) return `调用 ${toolName}`;
+
+  if (toolName === 'run_command' && parameters.CommandLine) {
+    const cmd = String(parameters.CommandLine).trim();
+    const shortCmd = cmd.length > 50 ? `${cmd.slice(0, 47)}...` : cmd;
+    return `执行命令 \`${shortCmd}\``;
+  }
+  if (
+    (toolName === 'view_file' || toolName === 'replace_file_content' || toolName === 'write_to_file') &&
+    (parameters.AbsolutePath || parameters.TargetFile || parameters.filePath || parameters.path)
+  ) {
+    const file = String(parameters.AbsolutePath || parameters.TargetFile || parameters.filePath || parameters.path);
+    const shortFile = file.split('/').slice(-2).join('/');
+    const actionMap: Record<string, string> = {
+      view_file: '查看文件',
+      replace_file_content: '编辑文件',
+      write_to_file: '写入文件',
+    };
+    return `${actionMap[toolName] || '操作文件'} \`${shortFile}\``;
+  }
+  if (toolName === 'grep_search' || toolName === 'search_web') {
+    const q = String(parameters.query || parameters.pattern || '');
+    return `检索 \`${q.slice(0, 30)}\``;
+  }
+  if (toolName === 'generate_image') {
+    const p = String(parameters.prompt || '');
+    return `生成图片: ${p.slice(0, 25)}`;
+  }
+  const firstParam = Object.values(parameters)[0];
+  if (typeof firstParam === 'string' && firstParam.length > 0) {
+    const val = firstParam.length > 35 ? `${firstParam.slice(0, 32)}...` : firstParam;
+    return `${toolName} (${val})`;
+  }
+  return `调用 ${toolName}`;
+}
+
+/**
+ * 根据指定引擎执行智能体任务 (agy 或 pi)。
+ */
+export async function runAgentEngine(
+  engine: AgentEngine,
+  options: AgyRunOptions,
+  config: BridgeConfig
+): Promise<AgyRunResult> {
+  if (engine === 'pi') {
+    return runPi(options, config.pi);
+  }
+  return runAgy(options, config.agy.binary);
+}
 
 /**
  * 终止 agy 进程树 (先 SIGTERM，1 秒后 SIGKILL 兜底)。
@@ -45,7 +141,7 @@ export function killProcessTree(child: ChildProcess): boolean {
 
 export async function runAgy(options: AgyRunOptions, binary = 'agy'): Promise<AgyRunResult> {
   const startedAt = Date.now();
-  const timeoutMs = options.timeoutMs || 600000; // 10 minutes default
+  const timeoutMs = options.timeoutMs !== undefined ? options.timeoutMs : 0; // <= 0 表示无超时限制
 
   const args: string[] = [
     '-p',
@@ -108,9 +204,12 @@ export async function runAgy(options: AgyRunOptions, binary = 'agy'): Promise<Ag
       fn();
     };
 
+    const resolvedBinary = resolveAgyBinary(binary);
+
     try {
-      child = spawn(binary, args, {
+      child = spawn(resolvedBinary, args, {
         cwd: options.cwd,
+        env: buildAgyEnvironment(),
         detached: true,
         stdio: ['ignore', 'pipe', 'pipe'],
       });
@@ -125,6 +224,19 @@ export async function runAgy(options: AgyRunOptions, binary = 'agy'): Promise<Ag
         )
       );
     }
+
+    child.on('error', (err) => {
+      killProcessTree(child);
+      finish(() => {
+        reject(
+          new BridgeError(
+            'E_AGY_NOT_FOUND',
+            `启动 agy 失败: ${err.message}`,
+            '请确认本地已正确安装并配置 agy 命令，且具备执行权限'
+          )
+        );
+      });
+    });
 
     if (options.signal) {
       if (options.signal.aborted) {
@@ -141,18 +253,20 @@ export async function runAgy(options: AgyRunOptions, binary = 'agy'): Promise<Ag
       });
     }
 
-    timeoutTimer = setTimeout(() => {
-      killProcessTree(child);
-      finish(() => {
-        reject(
-          new BridgeError(
-            'E_AGY_TIMEOUT',
-            `执行超时 (${Math.round(timeoutMs / 1000)} 秒)`,
-            '任务耗时过长，已自动终止进程以释放资源'
-          )
-        );
-      });
-    }, timeoutMs);
+    if (timeoutMs > 0) {
+      timeoutTimer = setTimeout(() => {
+        killProcessTree(child);
+        finish(() => {
+          reject(
+            new BridgeError(
+              'E_AGY_TIMEOUT',
+              `执行超时 (${Math.round(timeoutMs / 1000)} 秒)`,
+              '任务耗时过长，已自动终止进程以释放资源'
+            )
+          );
+        });
+      }, timeoutMs);
+    }
 
     const handleLine = (line: string) => {
       const trimmed = line.trim();
@@ -192,11 +306,20 @@ export async function runAgy(options: AgyRunOptions, binary = 'agy'): Promise<Ag
           options.onDelta?.(su.text_delta);
         }
 
+        const summary =
+          su.step_type === 'tool'
+            ? summarizeToolCall(su.tool_name, su.tool_info?.parameters)
+            : su.step_type === 'agent_response'
+            ? '生成回答'
+            : su.step_type || '处理中';
+
         options.onStep?.({
           index: su.step_index ?? -1,
           stepType: su.step_type || 'unknown',
           state: su.state || 'ACTIVE',
           toolName: su.tool_name,
+          summary,
+          toolInfo: su.tool_info,
           textDelta: su.text_delta,
           durationSeconds: su.duration_seconds,
         });
@@ -226,9 +349,10 @@ export async function runAgy(options: AgyRunOptions, binary = 'agy'): Promise<Ag
           totalTokens: rawUsage.total_tokens || 0,
         };
 
+        const errorDetail = res.error || (res.status === 'ERROR' ? res.response : '');
         finalResult = {
           status: res.status === 'SUCCESS' ? 'SUCCESS' : 'ERROR',
-          response: res.response || '',
+          response: res.response || errorDetail || '',
           conversationId: res.conversation_id || capturedConvId,
           durationSeconds: res.duration_seconds || (Date.now() - startedAt) / 1000,
           usage,
@@ -263,18 +387,32 @@ export async function runAgy(options: AgyRunOptions, binary = 'agy'): Promise<Ag
       }
 
       finish(() => {
-        if (code !== 0 && !finalResult) {
+        if (code !== 0) {
+          const detail =
+            (finalResult?.status === 'ERROR' && finalResult.response) ||
+            stderrBuf.trim().slice(-300) ||
+            `agy 异常退出 (退出码 ${code})`;
           return reject(
             new BridgeError(
               'E_AGY_RUN_FAILED',
-              `agy 异常退出 (退出码 ${code}): ${stderrBuf.trim().slice(-300)}`,
-              '请检查 agy 运行日志与环境'
+              detail,
+              '请检查模型配置或 agy 运行日志与环境'
+            )
+          );
+        }
+
+        if (finalResult && finalResult.status === 'ERROR') {
+          return reject(
+            new BridgeError(
+              'E_AGY_RUN_FAILED',
+              finalResult.response || 'agy 返回错误状态',
+              '请检查模型配置或任务提示词'
             )
           );
         }
 
         const result: AgyRunResult = finalResult || {
-          status: code === 0 ? 'SUCCESS' : 'ERROR',
+          status: 'SUCCESS',
           response: '',
           conversationId: capturedConvId,
           durationSeconds: (Date.now() - startedAt) / 1000,

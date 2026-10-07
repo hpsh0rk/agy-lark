@@ -14,11 +14,19 @@
       "my-project": "~/project/my-project"
     }
   },
+  "engine": "agy",
+  "pi": {
+    "binary": "pi",
+    "provider": "",
+    "defaultModel": "",
+    "thinking": "high",
+    "timeoutMs": 0
+  },
   "agy": {
     "binary": "agy",
     "defaultModel": "",
     "effort": "high",
-    "timeoutMs": 600000,
+    "timeoutMs": 0,
     "quota": {
       "enabled": true,
       "userAgent": "antigravitycli/1.2.14",
@@ -33,5 +41,11 @@
     "https": "http://127.0.0.1:7890",
     "all": "",
     "no": "127.0.0.1,localhost,::1"
+  },
+  "accessControl": {
+    "enabled": false,
+    "allowUsers": [],
+    "allowChats": [],
+    "notifyDenied": false
   }
 }

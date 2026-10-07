@@ -13,11 +13,27 @@ export interface AgyInitInfo {
   permissionMode?: string;
 }
 
+export interface ExecutionStep {
+  index: number;
+  stepType: string;
+  state: string;
+  toolName?: string;
+  summary: string;
+  durationSeconds?: number;
+}
+
 export interface AgyStepInfo {
   index: number;
   stepType: string;
   state: string;
   toolName?: string;
+  summary?: string;
+  toolInfo?: {
+    name?: string;
+    parameters?: Record<string, unknown>;
+    output?: string;
+    error?: { message?: string };
+  };
   textDelta?: string;
   durationSeconds?: number;
 }
@@ -39,6 +55,7 @@ export interface AgyRunOptions {
   effort?: 'low' | 'medium' | 'high' | 'max';
   timeoutMs?: number;
   signal?: AbortSignal;
+  imagePaths?: string[];
   onInit?: (info: AgyInitInfo) => void;
   onDelta?: (text: string) => void;
   onStep?: (step: AgyStepInfo) => void;
@@ -130,9 +147,46 @@ export interface ProxyConfig {
   no?: string;
 }
 
+export type AgentEngine = 'agy' | 'pi';
+
+/**
+ * 访问控制（可选）。
+ *
+ * 机器人以 YOLO 模式在本机驱动 `agy` / `pi` 执行引擎，任何能向机器人发消息的
+ * 用户理论上都可以触发本机命令执行。启用本配置后，只有白名单内的用户或会话
+ * 可以触发消息处理与卡片交互，其余请求一律静默忽略（fail-closed）。
+ */
+export interface AccessControlConfig {
+  /** 是否启用；默认 false（放行所有会话，仅建议纯私用且机器人不可被搜到时） */
+  enabled?: boolean;
+  /** 允许的用户 open_id 列表（命中即放行：私聊发起人、群聊发言人均适用） */
+  allowUsers?: string[];
+  /** 允许的会话 chat_id 列表（命中即放行整个群/单聊，群内所有成员均可使用） */
+  allowChats?: string[];
+  /** 拒绝时是否回复提示卡片；默认 false（静默忽略，避免群内刷屏与暴露机器人） */
+  notifyDenied?: boolean;
+}
+
+export interface PiConfig {
+  binary?: string;
+  provider?: string;
+  defaultModel?: string;
+  thinking?: 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  timeoutMs?: number;
+}
+
+export interface PiProviderInfo {
+  provider: string;
+  baseUrl?: string;
+  api?: string;
+  modelCount: number;
+  defaultModel?: string;
+}
+
 export interface BridgeConfig {
   lark: LarkConfig;
   workspace: WorkspaceConfig;
+  engine?: AgentEngine;
   agy: {
     binary?: string;
     defaultModel?: string;
@@ -140,7 +194,9 @@ export interface BridgeConfig {
     timeoutMs?: number;
     quota?: QuotaConfig;
   };
+  pi?: PiConfig;
   proxy?: ProxyConfig;
+  accessControl?: AccessControlConfig;
 }
 
 export interface SessionEntry {
@@ -152,6 +208,9 @@ export interface SessionEntry {
   cwd: string;
   conversationId?: string;
   model?: string;
+  agyModel?: string;
+  piModel?: string;
+  engine?: AgentEngine;
   lastActive: number;
   totalUsage?: {
     inputTokens: number;
@@ -160,3 +219,9 @@ export interface SessionEntry {
     totalTokens: number;
   };
 }
+
+export type AgentRunOptions = AgyRunOptions;
+export type AgentRunResult = AgyRunResult;
+export type AgentUsage = AgyUsage;
+export type AgentStepInfo = AgyStepInfo;
+export type AgentInitInfo = AgyInitInfo;

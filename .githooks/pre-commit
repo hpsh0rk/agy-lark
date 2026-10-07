@@ -1,0 +1,40 @@
+#!/bin/sh
+# Pre-commit 密钥扫描防线：阻止真实凭据进入 git 历史。
+# 优先使用 gitleaks（若已安装），否则退回内置高置信度模式扫描。
+# 启用方式：git config core.hooksPath .githooks （或 npm run hooks）
+
+changed=$(git diff --cached -U0 | grep '^+' | grep -v '^+++')
+if [ -z "$changed" ]; then
+  exit 0
+fi
+
+# 1) gitleaks（安装后自动接管，支持 800+ 种凭据规则）
+if command -v gitleaks >/dev/null 2>&1; then
+  if ! gitleaks protect --staged --redact --quiet; then
+    echo ""
+    echo "❌ [secret-guard] gitleaks 检测到疑似密钥，提交已阻止。"
+    echo "   修复后重试；若为误报，可用 [skip-ci] 不适用——请改为确认内容后 git commit --no-verify。"
+    exit 1
+  fi
+  exit 0
+fi
+
+# 2) 内置高置信度模式扫描（仅匹配真实凭据形态，占位符 xxxx 不误报）
+hits=$(printf '%s\n' "$changed" | grep -nE \
+  'GOCSPX-[A-Za-z0-9_-]{20,}|sk-(ant-)?[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{30,}|xox[baprs]-[A-Za-z0-9-]{10,}|BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY')
+hits="$hits
+$(printf '%s\n' "$changed" | grep -iE '"(appSecret|clientSecret|apiKey|api_key|secretKey)"[[:space:]]*:[[:space:]]*"[A-Za-z0-9+/=_-]{16,}"' | grep -vE '"[xX]{8,}"')"
+hits=$(printf '%s\n' "$hits" | sed '/^$/d')
+
+if [ -n "$hits" ]; then
+  echo ""
+  echo "❌ [secret-guard] 暂存改动中检测到疑似真实密钥，提交已阻止："
+  printf '%s\n' "$hits" | head -10
+  echo ""
+  echo "   - 确属密钥：请改用 config.json（已被 .gitignore 忽略）或环境变量。"
+  echo "   - 确属误报：git commit --no-verify 跳过本次检查。"
+  echo "   - 安装 gitleaks 获得更全规则：brew install gitleaks"
+  exit 1
+fi
+
+exit 0

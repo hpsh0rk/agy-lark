@@ -1,4 +1,5 @@
-import type { ModelInfo, QuotaSummary, SessionEntry } from '../core/types.js';
+import type { AgentEngine, ExecutionStep, ModelInfo, PiProviderInfo, QuotaSummary, SessionEntry } from '../core/types.js';
+import type { TaskRecord, TaskManager } from '../core/task-manager.js';
 
 /**
  * ⚠️ 飞书卡片回传值约定（依据官方组件文档）：
@@ -35,14 +36,17 @@ export function buildHelpCard(): Record<string, unknown> {
         tag: 'markdown',
         content:
           '### 📋 可用指令一览\n' +
+          '• **/engine [pi|agy]**：查看或切换当前会话执行引擎（支持 Pi 与 Agy）\n' +
+          '• **/tasks** 或 **/ps**：查看所有正在后台运行的长任务与耗时\n' +
           '• **/bind**：管理工作区项目（切换项目、关联已有项目、新建项目、删除别名）\n' +
           '• **/model**：查看与切换大模型（附带 Token 消耗统计）\n' +
+          '• **/quota**：查看当前引擎的用量统计与配额状态\n' +
           '• **/new** 或 **/reset**：重置当前会话，开启全新上下文\n' +
           '• **/pwd**：查看当前会话绑定的物理路径与会话详情\n' +
           '• **/cd `<path>`**：临时切换当前会话的物理工作目录\n' +
           '• **/config `<key>` `<val>`**：查看或修改全局配置（如默认项目根目录）\n' +
           '• **/status**：查看当前会话状态与 Token 统计\n' +
-          '• **/stop**：紧急终止当前正在执行的 `agy` 进程\n' +
+          '• **/stop [taskId|all]**：终止当前会话或指定后台长任务\n' +
           '• **/help**：展示本帮助信息卡片\n',
       },
       {
@@ -197,6 +201,8 @@ export interface ModelCardParams {
   sessionUsage?: SessionEntry['totalUsage'];
   /** 额度汇总（取数失败时为 undefined，卡片降级展示占位文案） */
   quota?: QuotaSummary;
+  engine?: AgentEngine;
+  piProviderInfo?: PiProviderInfo;
 }
 
 const QUOTA_WINDOW_LABELS: Record<string, string> = {
@@ -272,7 +278,9 @@ export function renderQuotaSection(quota?: QuotaSummary, now = Date.now()): stri
 }
 
 export function buildModelCard(params: ModelCardParams): Record<string, unknown> {
-  const cur = params.currentModel || '（跟随系统/默认）';
+  const engine = params.engine || 'agy';
+  const isPi = engine === 'pi';
+  const cur = params.currentModel || (isPi ? '（跟随 Pi 默认）' : '（跟随系统/默认）');
   const usage = params.sessionUsage || {
     inputTokens: 0,
     outputTokens: 0,
@@ -280,19 +288,20 @@ export function buildModelCard(params: ModelCardParams): Record<string, unknown>
     totalTokens: 0,
   };
 
-  const modelOptions = params.models.slice(0, 15).map((m) => ({
+  const modelOptions = params.models.slice(0, 20).map((m) => ({
     text: {
       tag: 'plain_text',
       content: `${m.displayName} ${m.isThinking ? '🧠' : '⚡'}`,
     },
-    value: JSON.stringify({ action: 'switch_model', modelId: m.id }),
+    value: JSON.stringify({ action: 'switch_model', modelId: m.id, engine }),
   }));
 
   const elements: any[] = [
     {
       tag: 'markdown',
       content:
-        `**当前生效模型**: \`${cur}\`\n\n` +
+        `**当前生效模型**: \`${cur}\`\n` +
+        `**⚙️ 执行引擎**: \`${isPi ? 'Pi Coding Agent (pi)' : 'Antigravity CLI (agy)'}\`\n\n` +
         `**📊 当前会话 Token 用量**:\n` +
         `• 输入 Token: **${usage.inputTokens.toLocaleString()}**\n` +
         `• 输出 Token: **${usage.outputTokens.toLocaleString()}**\n` +
@@ -302,16 +311,37 @@ export function buildModelCard(params: ModelCardParams): Record<string, unknown>
     {
       tag: 'hr',
     },
-    {
+  ];
+
+  if (isPi) {
+    const info = params.piProviderInfo;
+    const providerStr = info?.provider || 'local';
+    const endpointStr = info?.baseUrl ? `\`${info.baseUrl}\`` : '本地 / 环境变量配置';
+    elements.push({
+      tag: 'markdown',
+      content:
+        `**🔌 Pi 运行后端与授权配置**:\n` +
+        `• 接入 Provider: **${providerStr}**\n` +
+        `• API 服务端点: ${endpointStr}\n` +
+        `• 模型库规模: **${info?.modelCount ?? params.models.length}** 个可用模型\n` +
+        `• 计费与配额: **API Key / Token 按量计费**（不受 Google Cloud 额度限制）`,
+    });
+  } else {
+    elements.push({
       tag: 'markdown',
       content: renderQuotaSection(params.quota),
-    },
+    });
+  }
+
+  elements.push(
     {
       tag: 'hr',
     },
     {
       tag: 'markdown',
-      content: '**选择并切换模型** (支持 Gemini、Claude、GPT 等):',
+      content: isPi
+        ? '**选择并切换 Pi 模型** (已读取本地可用模型):'
+        : '**选择并切换 agy 模型** (支持 Gemini、Claude、GPT 等):',
     },
     {
       tag: 'action',
@@ -320,7 +350,7 @@ export function buildModelCard(params: ModelCardParams): Record<string, unknown>
           tag: 'select_static',
           placeholder: {
             tag: 'plain_text',
-            content: '点击选择大模型...',
+            content: isPi ? '点击选择 Pi 模型...' : '点击选择大模型...',
           },
           options: modelOptions,
         },
@@ -331,19 +361,23 @@ export function buildModelCard(params: ModelCardParams): Record<string, unknown>
       elements: [
         {
           tag: 'plain_text',
-          content: '💡 带 🧠 标记的模型具备思考链能力 (Thinking)；带 ⚡ 为高吞吐极速模型。',
+          content: isPi
+            ? '💡 带 🧠 标记的模型具备思考/推理能力 (Thinking)；发送 /engine 可切换为 agy 引擎。'
+            : '💡 带 🧠 标记的模型具备思考链能力 (Thinking)；带 ⚡ 为高吞吐极速模型。',
         },
       ],
-    },
-  ];
+    }
+  );
 
   return {
     config: { wide_screen_mode: true, update_multi: true },
     header: {
-      template: 'indigo',
+      template: isPi ? 'violet' : 'indigo',
       title: {
         tag: 'plain_text',
-        content: '🧠 模型选择与额度管理 (Models & Quota)',
+        content: isPi
+          ? '🧠 Pi 模型选择与用量概览 (Pi Models)'
+          : '🧠 agy 模型选择与额度管理 (Models & Quota)',
       },
     },
     elements,
@@ -354,38 +388,110 @@ export interface StreamingCardParams {
   text: string;
   status: 'running' | 'done' | 'error';
   durationSeconds?: number;
+  engine?: string;
+  taskId?: string;
   model?: string;
   project?: string;
   imageKeys?: string[];
   errorMessage?: string;
+  steps?: ExecutionStep[];
 }
 
 export function buildStreamingCard(params: StreamingCardParams): Record<string, unknown> {
+  const engineLabel = (params.engine || 'agy').toLowerCase() === 'pi' ? 'pi' : 'agy';
   let templateColor = 'blue';
-  let titleText = '⚡ agy 正在思考与执行...';
+  let titleText = `⚡ ${engineLabel} 正在思考与执行...`;
 
   if (params.status === 'done') {
     templateColor = 'green';
-    titleText = '✅ agy 执行完成';
+    titleText = `✅ ${engineLabel} 执行完成`;
   } else if (params.status === 'error') {
     templateColor = 'red';
-    titleText = '❌ agy 执行失败';
+    titleText = `❌ ${engineLabel} 执行失败`;
   }
 
   const elements: any[] = [];
+  const toolSteps = (params.steps || []).filter((s) => s.stepType === 'tool');
+  const hasStreamText = Boolean(params.text && params.text.trim());
 
-  // Main body markdown
-  const bodyText = params.text.trim() || (params.status === 'running' ? '_思考中..._' : '_（无返回内容）_');
-  elements.push({
-    tag: 'markdown',
-    content: bodyText,
-  });
+  if (params.status === 'running') {
+    if (!hasStreamText) {
+      // 阶段 1：尚未产生最终答复文本（智能体正在思考或执行工具）
+      if (toolSteps.length > 0) {
+        const activeStep = toolSteps.find((s) => s.state === 'ACTIVE') || toolSteps[toolSteps.length - 1];
+        const doneSteps = toolSteps.filter((s) => s !== activeStep && s.state === 'DONE');
 
-  if (params.errorMessage) {
+        const stepLines: string[] = [];
+        const isCurrentActive = activeStep.state === 'ACTIVE';
+        stepLines.push(`**⏳ 当前执行**: ${activeStep.summary} ${isCurrentActive ? '_(执行中...)_' : '✅'}`);
+
+        if (doneSteps.length > 0) {
+          stepLines.push('');
+          stepLines.push('**📋 已完成步骤**:');
+          const recentDone = doneSteps.slice(-5);
+          for (let i = 0; i < recentDone.length; i++) {
+            const s = recentDone[i];
+            const dur = s.durationSeconds !== undefined ? ` \`(${s.durationSeconds.toFixed(1)}s)\`` : '';
+            stepLines.push(`> ${i + 1}. ${s.summary} ✅${dur}`);
+          }
+          if (doneSteps.length > 5) {
+            stepLines.push(`> _... 以及更早的 ${doneSteps.length - 5} 个步骤_`);
+          }
+        }
+
+        elements.push({
+          tag: 'markdown',
+          content: stepLines.join('\n'),
+        });
+      } else {
+        elements.push({
+          tag: 'markdown',
+          content: params.text.trim() || `_${engineLabel.toUpperCase()} 正在思考与分析需求..._`,
+        });
+      }
+    } else {
+      // 阶段 2：大模型已开始流式打字输出最终回答
+      if (toolSteps.length > 0) {
+        elements.push({
+          tag: 'markdown',
+          content: `<font color="grey">⚡ 已完成 ${toolSteps.length} 步工具执行，正在生成答复：</font>`,
+        });
+      }
+      elements.push({
+        tag: 'markdown',
+        content: params.text.trim(),
+      });
+    }
+  } else {
+    // 阶段 3：已完成 (done) 或 异常 (error)
+    const bodyText = params.text.trim() || (params.status === 'done' ? '_（无返回内容）_' : '_执行未成功完成_');
     elements.push({
       tag: 'markdown',
-      content: `> ⚠️ **错误详情**: ${params.errorMessage}`,
+      content: bodyText,
     });
+
+    if (params.errorMessage) {
+      elements.push({
+        tag: 'markdown',
+        content: `> ⚠️ **错误详情**: ${params.errorMessage}`,
+      });
+    }
+
+    if (toolSteps.length > 0) {
+      elements.push({ tag: 'hr' });
+      const auditLines: string[] = [];
+      auditLines.push(`**📋 执行轨迹审计** (共 ${toolSteps.length} 步工具调用):`);
+      for (let i = 0; i < toolSteps.length; i++) {
+        const s = toolSteps[i];
+        const dur = s.durationSeconds !== undefined ? ` \`(${s.durationSeconds.toFixed(1)}s)\`` : '';
+        const statusIcon = s.state === 'ERROR' ? '❌' : '✅';
+        auditLines.push(`> ${i + 1}. ${s.summary} ${statusIcon}${dur}`);
+      }
+      elements.push({
+        tag: 'markdown',
+        content: auditLines.join('\n'),
+      });
+    }
   }
 
   // Render images if any
@@ -397,7 +503,7 @@ export function buildStreamingCard(params: StreamingCardParams): Record<string, 
         img_key: imgKey,
         alt: {
           tag: 'plain_text',
-          content: 'agy 生成的图片产物',
+          content: `${engineLabel} 生成的图片产物`,
         },
         mode: 'fit_horizontal',
         preview: true,
@@ -405,26 +511,32 @@ export function buildStreamingCard(params: StreamingCardParams): Record<string, 
     }
   }
 
-  // Footer notes
+  // Footer metadata (Card 2.0 规范：note 组件已废弃，使用灰色 markdown 富文本替代)
   const metaParts: string[] = [];
+  if (params.taskId) metaParts.push(`🆔 任务: ${params.taskId}`);
+  if (params.engine) metaParts.push(`⚙️ 引擎: ${params.engine}`);
   if (params.project) metaParts.push(`📁 项目: ${params.project}`);
   if (params.model) metaParts.push(`🤖 模型: ${params.model}`);
-  if (params.durationSeconds !== undefined) metaParts.push(`⏱️ 耗时: ${params.durationSeconds.toFixed(1)}s`);
+  if (params.durationSeconds !== undefined) {
+    if (params.durationSeconds >= 60) {
+      const mins = Math.floor(params.durationSeconds / 60);
+      const secs = (params.durationSeconds % 60).toFixed(1);
+      metaParts.push(`⏱️ 耗时: ${mins}m ${secs}s`);
+    } else {
+      metaParts.push(`⏱️ 耗时: ${params.durationSeconds.toFixed(1)}s`);
+    }
+  }
 
   if (metaParts.length > 0) {
     elements.push({
-      tag: 'note',
-      elements: [
-        {
-          tag: 'plain_text',
-          content: metaParts.join('  |  '),
-        },
-      ],
+      tag: 'markdown',
+      content: `<font color="grey">${metaParts.join('  |  ')}</font>`,
     });
   }
 
   return {
-    config: { wide_screen_mode: true, update_multi: true },
+    schema: '2.0',
+    config: { update_multi: true },
     header: {
       template: templateColor,
       title: {
@@ -432,7 +544,9 @@ export function buildStreamingCard(params: StreamingCardParams): Record<string, 
         content: titleText,
       },
     },
-    elements,
+    body: {
+      elements,
+    },
   };
 }
 
@@ -544,4 +658,154 @@ export function buildShutdownCard(params: ShutdownCardParams): Record<string, un
     ],
   };
 }
+
+export function buildTasksCard(tasks: TaskRecord[], taskManager: TaskManager): Record<string, unknown> {
+  const activeCount = tasks.length;
+  const elements: any[] = [];
+
+  if (activeCount === 0) {
+    elements.push({
+      tag: 'markdown',
+      content: '⚪ **当前没有正在运行的后台任务。**\n\n发送任务需求后即可自动在后台异步执行，支持数小时长任务。',
+    });
+  } else {
+    elements.push({
+      tag: 'markdown',
+      content: `📋 **当前正在运行中的后台任务 (${activeCount})**\n所有任务均在后台持续运行，不会因超时或发送新消息被中断。`,
+    });
+    elements.push({ tag: 'hr' });
+
+    for (const task of tasks) {
+      const elapsed = (Date.now() - task.startedAt) / 1000;
+      const durationStr = taskManager.formatDuration(elapsed);
+      const promptSnippet = task.prompt.length > 50 ? `${task.prompt.slice(0, 50)}...` : task.prompt;
+      const proj = task.projectName ? `\`${task.projectName}\`` : `\`${task.cwd}\``;
+
+      elements.push({
+        tag: 'markdown',
+        content:
+          `🟢 **[${task.id}]** \`${task.engine.toUpperCase()}\` · ${proj}\n` +
+          `• 运行时长: **${durationStr}**\n` +
+          `• 任务内容: ${promptSnippet}\n` +
+          `• 终止指令: \`/stop ${task.id}\``,
+      });
+
+      elements.push({
+        tag: 'action',
+        actions: [
+          {
+            tag: 'button',
+            text: {
+              tag: 'plain_text',
+              content: `🛑 终止任务 ${task.id}`,
+            },
+            type: 'danger',
+            value: {
+              action: 'stop_task',
+              taskId: task.id,
+            },
+          },
+        ],
+      });
+
+      elements.push({ tag: 'hr' });
+    }
+  }
+
+  return {
+    schema: '2.0',
+    config: {
+      update_multi: true,
+    },
+    header: {
+      template: activeCount > 0 ? 'blue' : 'grey',
+      title: {
+        tag: 'plain_text',
+        content: `⚡ 后台任务列表 (${activeCount})`,
+      },
+    },
+    body: {
+      elements,
+    },
+  };
+}
+
+export interface EngineCardParams {
+  currentEngine: AgentEngine;
+  globalEngine: AgentEngine;
+  effectiveModel?: string;
+  piProviderInfo?: PiProviderInfo;
+}
+
+export function buildEngineCard(params: EngineCardParams): Record<string, unknown> {
+  const isPi = params.currentEngine === 'pi';
+  const curName = isPi ? 'Pi Coding Agent (pi)' : 'Antigravity CLI (agy)';
+  const globalName = params.globalEngine === 'pi' ? 'Pi Coding Agent (pi)' : 'Antigravity CLI (agy)';
+
+  return {
+    config: { wide_screen_mode: true, update_multi: true },
+    header: {
+      template: isPi ? 'violet' : 'indigo',
+      title: {
+        tag: 'plain_text',
+        content: '⚙️ 执行引擎管理 (Engine Switcher)',
+      },
+    },
+    elements: [
+      {
+        tag: 'markdown',
+        content:
+          `**当前会话执行引擎**: **${curName}**\n` +
+          `• 对应生效模型: \`${params.effectiveModel || '系统默认'}\`\n` +
+          `• 全局默认执行引擎: **${globalName}**\n\n` +
+          `**💡 引擎特性与定位说明**:\n` +
+          `• **agy (Antigravity)**: 深度集成 Google DeepMind CLI，支持 Gemini 3.8 / Claude / GPT 模型与 Google Cloud 额度池，具备全功能项目编辑与多模态。\n` +
+          `• **pi (Pi Coding Agent)**: 轻量高速编程智能体，原生支持第三方 OpenAI 兼容 API、本地模型网关与终端流式推理。`,
+      },
+      { tag: 'hr' },
+      {
+        tag: 'action',
+        actions: [
+          {
+            tag: 'button',
+            text: {
+              tag: 'plain_text',
+              content: isPi ? '🚀 切换为 agy 引擎' : '✅ 当前为 agy 引擎',
+            },
+            type: isPi ? 'primary' : 'default',
+            value: { action: 'switch_engine', engine: 'agy' },
+          },
+          {
+            tag: 'button',
+            text: {
+              tag: 'plain_text',
+              content: isPi ? '✅ 当前为 pi 引擎' : '⚡ 切换为 pi 引擎',
+            },
+            type: isPi ? 'default' : 'primary',
+            value: { action: 'switch_engine', engine: 'pi' },
+          },
+          {
+            tag: 'button',
+            text: {
+              tag: 'plain_text',
+              content: '🧠 模型面板',
+            },
+            type: 'default',
+            value: { action: 'model_card' },
+          },
+        ],
+      },
+      {
+        tag: 'note',
+        elements: [
+          {
+            tag: 'plain_text',
+            content: '💡 点击上方按钮可一键切换当前会话引擎；修改全局默认引擎请发送 /config engine <agy|pi>。',
+          },
+        ],
+      },
+    ],
+  };
+}
+
 

@@ -1,9 +1,10 @@
 import type { WorkspaceManager } from '../core/workspace.js';
 import type { SessionStore } from '../core/sessions.js';
-import type { QuotaConfig } from '../core/types.js';
-import { fetchAvailableModels, getCachedModels } from '../core/models.js';
+import type { AgentEngine, BridgeConfig, QuotaConfig, SessionEntry } from '../core/types.js';
+import type { TaskManager } from '../core/task-manager.js';
+import { fetchAvailableModels, fetchModelsForEngine, getCachedModels, getPiProviderInfo, resolveModelForEngine } from '../core/models.js';
 import { fetchQuotaSummary, getCachedQuota } from '../core/quota.js';
-import { buildBindCard, buildHelpCard, buildModelCard } from './cards.js';
+import { buildBindCard, buildEngineCard, buildHelpCard, buildModelCard, buildTasksCard } from './cards.js';
 
 export interface CardActionContext {
   workspace: WorkspaceManager;
@@ -12,6 +13,18 @@ export interface CardActionContext {
   defaultModel?: string;
   /** 额度取数配置；不传则用 core/quota.ts 的内置默认值 */
   quota?: QuotaConfig;
+  taskManager?: TaskManager;
+  config?: BridgeConfig;
+}
+
+function resolveBridgeConfig(ctx: CardActionContext): BridgeConfig {
+  if (ctx.config) return ctx.config;
+  return {
+    lark: {} as any,
+    workspace: {} as any,
+    agy: { binary: ctx.agyBinary },
+    pi: undefined,
+  };
 }
 
 export type ToastType = 'info' | 'success' | 'error' | 'warning';
@@ -214,21 +227,67 @@ async function dispatchCardAction(
   }
 
   if (actionName === 'model_card') {
-    // 模型列表（spawn agy，冷路径可达 3s+）与额度（HTTP）并行取数；
-    // 两者命中缓存时均为毫秒级，确保在飞书 3 秒回调超时前返回。
+    const engine: AgentEngine = session.engine || ctx.config?.engine || 'pi';
+    const isPi = engine === 'pi';
+    const bridgeConfig = resolveBridgeConfig(ctx);
+    const effectiveModel = resolveModelForEngine(session, engine, bridgeConfig);
+
     const [models, quota] = await Promise.all([
-      getCachedModels() ?? fetchAvailableModels(ctx.agyBinary),
-      getCachedQuota() ?? fetchQuotaSummary(ctx.quota),
+      getCachedModels(engine) ?? fetchModelsForEngine(engine, bridgeConfig),
+      !isPi && ctx.config?.agy?.quota?.enabled ? (getCachedQuota() ?? fetchQuotaSummary(ctx.quota)) : Promise.resolve(undefined),
     ]);
+    const piProviderInfo = isPi ? getPiProviderInfo(ctx.config?.pi) : undefined;
+
     return respond(
       buildModelCard({
-        currentModel: session.model || ctx.defaultModel,
+        currentModel: effectiveModel,
         models,
         sessionUsage: session.totalUsage,
         quota,
+        engine,
+        piProviderInfo,
       }),
-      { type: 'info', content: '已展开模型与额度面板' }
+      { type: 'info', content: isPi ? '已展开 Pi 模型面板' : '已展开 agy 模型与额度面板' }
     );
+  }
+
+  if (actionName === 'tasks_card') {
+    const activeTasks = ctx.taskManager ? ctx.taskManager.getActiveTasks() : [];
+    return respond(buildTasksCard(activeTasks, ctx.taskManager || ({} as any)), {
+      type: 'info',
+      content: '已刷新后台任务列表',
+    });
+  }
+
+  if (actionName === 'engine_card') {
+    const curEngine: AgentEngine = session.engine || ctx.config?.engine || 'pi';
+    const bridgeConfig = resolveBridgeConfig(ctx);
+    const effectiveModel = resolveModelForEngine(session, curEngine, bridgeConfig);
+    const piProviderInfo = curEngine === 'pi' ? getPiProviderInfo(ctx.config?.pi) : undefined;
+    const globalEngine = ctx.config?.engine || 'pi';
+
+    return respond(
+      buildEngineCard({
+        currentEngine: curEngine,
+        globalEngine,
+        effectiveModel,
+        piProviderInfo,
+      }),
+      { type: 'info', content: '已展开执行引擎管理面板' }
+    );
+  }
+
+  if (actionName === 'stop_task') {
+    const taskId = parsed.taskId;
+    if (!taskId || !ctx.taskManager) {
+      return { toast: { type: 'error', content: '未获取到任务 ID' } };
+    }
+    const aborted = ctx.taskManager.abortTask(taskId);
+    const activeTasks = ctx.taskManager.getActiveTasks();
+    return respond(buildTasksCard(activeTasks, ctx.taskManager), {
+      type: aborted ? 'success' : 'info',
+      content: aborted ? `已终止任务 ${taskId}` : `任务 ${taskId} 已不在运行中`,
+    });
   }
 
   // ---- 卡片内的具体操作 ----
@@ -298,29 +357,72 @@ async function dispatchCardAction(
       return { toast: { type: 'error', content: '未获取到要切换的模型 ID，请重新打开模型面板' } };
     }
 
-    const updated = ctx.sessions.update(session.sessionKey, {
+    const engine: AgentEngine = session.engine || ctx.config?.engine || 'pi';
+    const isPi = engine === 'pi';
+
+    const updatePayload: Partial<SessionEntry> = {
       model: modelId,
-    });
+      ...(isPi ? { piModel: modelId } : { agyModel: modelId }),
+    };
+
+    const updated = ctx.sessions.update(session.sessionKey, updatePayload);
     if (!updated) {
       return { toast: { type: 'error', content: '会话不存在，模型切换失败，请重新打开模型面板' } };
     }
 
-    // 打开模型面板时已拉取并缓存过列表，命中缓存即可避免在热路径上 spawn `agy models`，
-    // 从而保证在飞书 3 秒回调超时前返回（超时会让 toast 与卡片更新一起被丢弃）。
+    const bridgeConfig = resolveBridgeConfig(ctx);
     const [models, quota] = await Promise.all([
-      getCachedModels() ?? fetchAvailableModels(ctx.agyBinary),
-      getCachedQuota() ?? fetchQuotaSummary(ctx.quota),
+      getCachedModels(engine) ?? fetchModelsForEngine(engine, bridgeConfig),
+      !isPi && ctx.config?.agy?.quota?.enabled ? (getCachedQuota() ?? fetchQuotaSummary(ctx.quota)) : Promise.resolve(undefined),
     ]);
+    const piProviderInfo = isPi ? getPiProviderInfo(ctx.config?.pi) : undefined;
+
     const updatedCard = buildModelCard({
       currentModel: modelId,
       models,
       sessionUsage: updated.totalUsage ?? session.totalUsage,
       quota,
+      engine,
+      piProviderInfo,
     });
 
     return respond(updatedCard, {
       type: 'success',
       content: `模型已切换为: ${modelId}`,
+    });
+  }
+
+  if (actionName === 'switch_engine') {
+    const targetEngine = parsed.engine as AgentEngine;
+    if (targetEngine !== 'agy' && targetEngine !== 'pi') {
+      return { toast: { type: 'error', content: '不支持的引擎类型，仅支持 agy 或 pi' } };
+    }
+
+    const bridgeConfig = resolveBridgeConfig(ctx);
+    const effectiveModel = resolveModelForEngine(session, targetEngine, bridgeConfig);
+
+    const updated = ctx.sessions.update(session.sessionKey, {
+      engine: targetEngine,
+      model: effectiveModel,
+    });
+    if (!updated) {
+      return { toast: { type: 'error', content: '会话不存在，引擎切换失败' } };
+    }
+
+    const piProviderInfo = targetEngine === 'pi' ? getPiProviderInfo(ctx.config?.pi) : undefined;
+    const globalEngine = ctx.config?.engine || 'pi';
+
+    const updatedCard = buildEngineCard({
+      currentEngine: targetEngine,
+      globalEngine,
+      effectiveModel,
+      piProviderInfo,
+    });
+
+    const engineName = targetEngine === 'pi' ? 'Pi Coding Agent' : 'Antigravity CLI';
+    return respond(updatedCard, {
+      type: 'success',
+      content: `已成功切换为 ${engineName} (模型: ${effectiveModel || '系统默认'})`,
     });
   }
 

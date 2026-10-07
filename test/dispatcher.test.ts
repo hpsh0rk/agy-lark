@@ -16,6 +16,7 @@ function setupDispatcher() {
   const sessions = new SessionStore(path.join(tmpDir, 'sessions.json'));
 
   const replies: any[] = [];
+  const patches: any[] = [];
   const mockClient: any = {
     im: {
       message: {
@@ -26,6 +27,10 @@ function setupDispatcher() {
             msg: 'ok',
             data: { message_id: `om_reply_${replies.length}` },
           };
+        },
+        patch: async (req: any) => {
+          patches.push(req);
+          return { code: 0, msg: 'ok' };
         },
       },
       messageResource: {
@@ -55,7 +60,7 @@ function setupDispatcher() {
     },
   });
 
-  return { dispatcher, workspace, sessions, replies, tmpDir, makeMessageEvent };
+  return { dispatcher, workspace, sessions, replies, patches, tmpDir, makeMessageEvent };
 }
 
 test('dispatcher: /bind add 成功关联已有物理目录', async () => {
@@ -216,3 +221,149 @@ test('dispatcher: 收到纯图片消息，自动下载并赋予默认提示词�
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
+test('dispatcher: /engine 切换自动纠偏模型，防止跨引擎模型污染', async () => {
+  const { dispatcher, sessions, replies, tmpDir, makeMessageEvent } = setupDispatcher();
+
+  // 1. 在当前会话预置 Pi 专属模型
+  const sessionKey = 'feishu:dm:oc_test_chat';
+  sessions.update(sessionKey, {
+    model: 'global:deepseek-v4.1-flash',
+    piModel: 'global:deepseek-v4.1-flash',
+  });
+
+  // 2. 发送 /engine agy 切换引擎
+  await dispatcher.handleMessage(makeMessageEvent('/engine agy'));
+
+  // 3. 校验卡片回复与会话持久化模型已自动清洗
+  assert.ok(replies.length > 0);
+  const updatedSession = sessions.get(sessionKey);
+  assert.equal(updatedSession?.engine, 'agy');
+  assert.ok(
+    updatedSession?.model !== 'global:deepseek-v4.1-flash',
+    '切换到 agy 引擎后，不能再保留 global:deepseek-v4.1-flash'
+  );
+
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+});
+
+test('dispatcher: 收到普通消息触发智能体，流式派发步骤并更新至卡片', async () => {
+  const { dispatcher, patches, replies, tmpDir, makeMessageEvent } = setupDispatcher();
+
+  const mockScriptPath = path.join(tmpDir, 'mock-agent.js');
+  const mockScriptContent = `#!/usr/bin/env node
+console.log(JSON.stringify({ type: 'session', id: 'conv-step-test', cwd: process.cwd() }));
+console.log(JSON.stringify({
+  type: 'tool_execution_start',
+  toolName: 'run_command',
+  args: { CommandLine: 'find . -name "*.md"' }
+}));
+console.log(JSON.stringify({
+  type: 'tool_execution_end',
+  toolName: 'run_command',
+  result: 'found 3 files',
+  isError: false
+}));
+console.log(JSON.stringify({
+  type: 'message_update',
+  assistantMessageEvent: { type: 'text_delta', delta: 'Here are the files.' }
+}));
+process.exit(0);
+`;
+  fs.writeFileSync(mockScriptPath, mockScriptContent, { mode: 0o755 });
+
+  (dispatcher as any).config.engine = 'pi';
+  (dispatcher as any).config.pi = { binary: mockScriptPath, timeoutMs: 5000 };
+
+  await dispatcher.handleMessage(makeMessageEvent('列出所有 markdown 文件'));
+
+  // 等待异步任务与卡片更新收尾
+  for (let i = 0; i < 20; i++) {
+    if (patches.length > 0) break;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+
+  // 1. 验证回复了初始卡片
+  assert.ok(replies.length > 0, `应回复初始卡片，实际 replies: ${replies.length}, patches: ${patches.length}`);
+  const initialCard = JSON.parse(replies[0].data.content);
+  assert.equal(initialCard.schema, '2.0');
+
+  // 2. 验证触发了卡片 patch 更新且包含步骤轨迹
+  assert.ok(patches.length > 0, '应触发卡片 patch 更新');
+  const lastPatch = JSON.parse(patches[patches.length - 1].data.content);
+  const cardContent = JSON.stringify(lastPatch);
+  assert.ok(cardContent.includes('执行轨迹审计') || cardContent.includes('run_command'), '卡片应包含执行步骤');
+  assert.ok(cardContent.includes('Here are the files'), '卡片应包含最终答复');
+
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+});
+
+
+
+test('dispatcher: 访问控制未启用时行为不变', async () => {
+  const { dispatcher, replies, makeMessageEvent } = setupDispatcher();
+  await dispatcher.handleMessage(makeMessageEvent('/help'));
+  assert.equal(replies.length, 1);
+});
+
+test('dispatcher: 白名单外用户消息被静默忽略，不产生任何回复', async () => {
+  const { dispatcher, replies, makeMessageEvent } = setupDispatcher();
+  (dispatcher as any).config.accessControl = {
+    enabled: true,
+    allowUsers: ['ou_owner'],
+    allowChats: [],
+    notifyDenied: false,
+  };
+
+  // makeMessageEvent 默认不带 sender，等价于未知用户
+  await dispatcher.handleMessage(makeMessageEvent('/help'));
+  await dispatcher.handleMessage(makeMessageEvent('普通提问也会被拒绝'));
+
+  assert.equal(replies.length, 0);
+});
+
+test('dispatcher: 白名单用户消息正常处理', async () => {
+  const { dispatcher, replies, makeMessageEvent } = setupDispatcher();
+  (dispatcher as any).config.accessControl = {
+    enabled: true,
+    allowUsers: ['ou_owner'],
+    allowChats: [],
+    notifyDenied: false,
+  };
+
+  const event = makeMessageEvent('/help');
+  event.sender = { sender_id: { open_id: 'ou_owner' } };
+  await dispatcher.handleMessage(event);
+
+  assert.equal(replies.length, 1);
+  const sentCard = JSON.parse(replies[0].data.content);
+  assert.equal(sentCard.header.title.content, '🤖 Antigravity CLI (agy) 指南');
+});
+
+test('dispatcher: 白名单会话内任意用户可用', async () => {
+  const { dispatcher, replies, makeMessageEvent } = setupDispatcher();
+  (dispatcher as any).config.accessControl = {
+    enabled: true,
+    allowUsers: [],
+    allowChats: ['oc_test_chat'],
+    notifyDenied: false,
+  };
+
+  await dispatcher.handleMessage(makeMessageEvent('/help'));
+  assert.equal(replies.length, 1);
+});
+
+test('dispatcher: notifyDenied 开启时拒绝会回复提示卡片', async () => {
+  const { dispatcher, replies, makeMessageEvent } = setupDispatcher();
+  (dispatcher as any).config.accessControl = {
+    enabled: true,
+    allowUsers: ['ou_owner'],
+    allowChats: [],
+    notifyDenied: true,
+  };
+
+  await dispatcher.handleMessage(makeMessageEvent('/help'));
+
+  assert.equal(replies.length, 1);
+  const cardText = JSON.stringify(JSON.parse(replies[0].data.content));
+  assert.ok(cardText.includes('无访问权限'), '提示卡片应包含无权限文案');
+});

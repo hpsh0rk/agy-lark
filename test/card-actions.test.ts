@@ -261,3 +261,50 @@ test('card-actions: 回传对象缺少 action 字段时给出明确失败提示'
   assert.equal(res.toast?.type, 'error');
   assert.ok(res.toast?.content.length > 0, '失败提示不能为空');
 });
+
+test('card-actions: engine_card 成功展开执行引擎管理面板', async () => {
+  const { ctx } = makeCtx();
+  const res = await handleCardAction(cardEvent('engine_card'), ctx);
+
+  assert.ok(res.card, 'engine_card 必须返回 card');
+  assert.equal(res.card!.type, 'raw');
+  const json = JSON.stringify(res.card!.data);
+  assert.ok(json.includes('switch_engine'), '引擎卡片应包含 switch_engine 回调');
+  assert.ok(json.includes('执行引擎管理'), '引擎卡片标题应包含执行引擎管理');
+});
+
+test('card-actions: switch_engine 成功切换引擎并自适应校准模型', async () => {
+  const { ctx, sessions } = makeCtx();
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-cwd-'));
+  sessions.getOrCreate({ chatId: 'oc_chat_1', chatType: 'p2p', defaultCwd: cwd });
+
+  // 初始切换为 agy
+  const toAgy = await handleCardAction(
+    cardEvent('switch_engine', { engine: 'agy' }),
+    ctx
+  );
+  assert.equal(toAgy.toast?.type, 'success');
+  assert.ok(toAgy.toast?.content.includes('Antigravity CLI'));
+  assert.equal(sessions.get('feishu:dm:oc_chat_1')?.engine, 'agy');
+
+  // 再切换为 pi
+  const toPi = await handleCardAction(
+    cardEvent('switch_engine', { engine: 'pi' }),
+    ctx
+  );
+  assert.equal(toPi.toast?.type, 'success');
+  assert.ok(toPi.toast?.content.includes('Pi Coding Agent'));
+  assert.equal(sessions.get('feishu:dm:oc_chat_1')?.engine, 'pi');
+});
+
+test('card-actions: switch_engine 非法引擎类型拦截', async () => {
+  const { ctx } = makeCtx();
+  const res = await handleCardAction(
+    cardEvent('switch_engine', { engine: 'unknown_engine' }),
+    ctx
+  );
+
+  assert.equal(res.toast?.type, 'error');
+  assert.ok(res.toast?.content.includes('不支持的引擎类型'));
+});
+

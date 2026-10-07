@@ -7,6 +7,7 @@ import {
   buildStreamingCard,
   buildStartupCard,
   buildShutdownCard,
+  buildEngineCard,
   formatResetCountdown,
   renderProgressBar,
   renderQuotaSection,
@@ -80,6 +81,32 @@ test('cards: buildStreamingCard 状态与图片嵌入', () => {
   const jsonStr = JSON.stringify(doneCard);
   assert.ok(jsonStr.includes('img_v3_test123'), '应包含图片的 key');
   assert.ok(jsonStr.includes('4.2s'), '应包含格式化后的执行耗时');
+});
+
+test('cards: buildStreamingCard 输出标准飞书卡片 2.0 结构 (支持富文本标题与分割线)', () => {
+  const card = buildStreamingCard({
+    text: '### 结论先行\n---\n详细内容',
+    status: 'done',
+    project: 'demo-app',
+    model: 'gemini-3.8-flash',
+    durationSeconds: 1.5,
+  }) as any;
+
+  assert.equal(card.schema, '2.0', '卡片必须声明 schema: 2.0 才能支持富文本标题与分割线');
+  assert.ok(card.body && Array.isArray(card.body.elements), 'Card 2.0 组件必须位于 body.elements');
+
+  // 验证不包含已被 2.0 废弃的 note 标签
+  const hasNoteTag = card.body.elements.some((el: any) => el.tag === 'note');
+  assert.equal(hasNoteTag, false, 'Card 2.0 中不应包含废弃的 note 组件');
+
+  // 验证元信息以灰色 markdown 输出
+  const metaElement = card.body.elements.find((el: any) =>
+    el.tag === 'markdown' && typeof el.content === 'string' && el.content.includes('<font color="grey">')
+  );
+  assert.ok(metaElement, '应使用 font 标签将底部元信息渲染为灰色');
+  assert.ok(metaElement.content.includes('demo-app'));
+  assert.ok(metaElement.content.includes('gemini-3.8-flash'));
+  assert.ok(metaElement.content.includes('1.5s'));
 });
 
 test('cards: buildStartupCard 包含应用名与快速开始按钮', () => {
@@ -222,6 +249,38 @@ test('cards: buildModelCard 嵌入额度区块（有数据 / 无数据两种）'
   assert.ok(withoutQuota.includes('select_static'), '降级时模型下拉仍应在');
 });
 
+test('cards: buildModelCard 针对 Pi 引擎的专属渲染与额度说明', () => {
+  const piModels = [
+    { id: 'deepseek-v4.1-flash', displayName: 'DeepSeek V4.1 Flash', isThinking: true },
+  ];
+
+  const card = buildModelCard({
+    models: piModels,
+    engine: 'pi',
+    piProviderInfo: {
+      provider: 'local',
+      baseUrl: 'http://localhost:7863/v1',
+      api: 'openai-completions',
+      modelCount: 1,
+      defaultModel: 'deepseek-v4.1-flash',
+    },
+    sessionUsage: {
+      inputTokens: 100,
+      outputTokens: 50,
+      cacheReadTokens: 20,
+      totalTokens: 150,
+    },
+  });
+
+  const cardStr = JSON.stringify(card);
+  assert.equal((card as any).header?.template, 'violet', 'Pi 模式下卡片标题应为紫色 violet');
+  assert.ok(cardStr.includes('Pi Coding Agent'), '应包含 Pi 执行引擎标识');
+  assert.ok(cardStr.includes('http://localhost:7863/v1'), '应展示 Pi 的 API 服务端点');
+  assert.ok(cardStr.includes('按量计费'), '应展示按量计费说明，不受 Google 额度限制');
+  assert.ok(cardStr.includes('deepseek-v4.1-flash'), '模型下拉中应包含 DeepSeek');
+  assert.equal(cardStr.includes('Gemini'), false, 'Pi 卡片中绝不能出现 Gemini 关键词');
+});
+
 test('cards: buildShutdownCard 包含停止原因与重启提示', () => {
   const card = buildShutdownCard({
     reason: '收到 SIGINT 终止信号 (用户停止)',
@@ -231,4 +290,97 @@ test('cards: buildShutdownCard 包含停止原因与重启提示', () => {
   assert.ok(jsonStr.includes('SIGINT'), '应包含终止原因');
   assert.ok(jsonStr.includes('npm run lark'), '应包含重启建议命令');
 });
+
+test('cards: buildEngineCard 渲染引擎切换按钮与卡片规范', () => {
+  const card = buildEngineCard({
+    currentEngine: 'pi',
+    globalEngine: 'agy',
+    effectiveModel: 'deepseek-v4.1-flash',
+  });
+  const cardStr = JSON.stringify(card);
+  assert.equal((card as any).header?.template, 'violet');
+  assert.ok(cardStr.includes('switch_engine'), '应包含 switch_engine 回调动作');
+  assert.ok(cardStr.includes('切换为 agy 引擎'), '应包含切换为 agy 按钮');
+  assert.ok(cardStr.includes('当前为 pi 引擎'), '应标记当前为 pi 引擎');
+  assert.ok(cardStr.includes('model_card'), '应包含打开模型面板按钮');
+});
+
+test('cards: buildStreamingCard 运行中步骤实时渲染与已完成步骤收纳', () => {
+  // 1. 无最终回答时的步骤流展示
+  const cardRunningSteps = buildStreamingCard({
+    text: '',
+    status: 'running',
+    engine: 'agy',
+    steps: [
+      {
+        index: 1,
+        stepType: 'tool',
+        state: 'DONE',
+        toolName: 'run_command',
+        summary: '执行命令 `find . -name "*.md"`',
+        durationSeconds: 0.2,
+      },
+      {
+        index: 2,
+        stepType: 'tool',
+        state: 'ACTIVE',
+        toolName: 'view_file',
+        summary: '查看文件 `specs/015-stream.md`',
+      },
+    ],
+  });
+
+  const runningStr = JSON.stringify(cardRunningSteps);
+  assert.ok(runningStr.includes('⏳ 当前执行'), '应呈现当前正在执行的动作');
+  assert.ok(runningStr.includes('查看文件 `specs/015-stream.md`'), '应包含当前活跃工具');
+  assert.ok(runningStr.includes('_(执行中...)_'), '应标记执行中状态');
+  assert.ok(runningStr.includes('📋 已完成步骤'), '应呈现已完成步骤清单');
+  assert.ok(runningStr.includes('find . -name'), '已完成列表中应包含第 1 步命令');
+  assert.ok(runningStr.includes('0.2s'), '应包含格式化后的步骤耗时');
+
+  // 2. 最终答复开始输出时的优雅过渡
+  const cardStreamingWithSteps = buildStreamingCard({
+    text: '### 总结报告\n已成功分析完成。',
+    status: 'running',
+    engine: 'agy',
+    steps: [
+      {
+        index: 1,
+        stepType: 'tool',
+        state: 'DONE',
+        toolName: 'run_command',
+        summary: '执行命令 `find . -name "*.md"`',
+        durationSeconds: 0.15,
+      },
+    ],
+  });
+
+  const streamStr = JSON.stringify(cardStreamingWithSteps);
+  assert.ok(streamStr.includes('已完成 1 步工具执行，正在生成答复'), '应提示已完成工具步数');
+  assert.ok(streamStr.includes('### 总结报告'), '应展示流式正文');
+
+  // 3. 执行完成时的轨迹审计记录
+  const cardDoneWithAudit = buildStreamingCard({
+    text: '所有文件已整理完毕。',
+    status: 'done',
+    engine: 'agy',
+    durationSeconds: 3.5,
+    steps: [
+      {
+        index: 1,
+        stepType: 'tool',
+        state: 'DONE',
+        toolName: 'run_command',
+        summary: '执行命令 `find . -name "*.md"`',
+        durationSeconds: 0.15,
+      },
+    ],
+  });
+
+  const doneStr = JSON.stringify(cardDoneWithAudit);
+  assert.ok(doneStr.includes('📋 执行轨迹审计'), '完成态卡片应包含执行轨迹审计');
+  assert.ok(doneStr.includes('共 1 步工具调用'), '审计中应包含工具调用计数');
+  assert.ok(doneStr.includes('所有文件已整理完毕'), '正文答复应完整保留');
+});
+
 

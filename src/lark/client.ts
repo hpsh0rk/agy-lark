@@ -2,10 +2,11 @@ import * as lark from '@larksuiteoapi/node-sdk';
 import type { BridgeConfig, ActiveTarget } from '../core/types.js';
 import { WorkspaceManager } from '../core/workspace.js';
 import { SessionStore } from '../core/sessions.js';
-import { fetchAvailableModels } from '../core/models.js';
+import { fetchAvailableModels, fetchPiModels } from '../core/models.js';
 import { fetchQuotaSummary } from '../core/quota.js';
 import { MessageDispatcher } from './dispatcher.js';
 import { handleCardAction } from './card-actions.js';
+import { checkAccess } from './access-control.js';
 import { buildStartupCard, buildShutdownCard } from './cards.js';
 
 export class LarkBridgeService {
@@ -122,12 +123,25 @@ export class LarkBridgeService {
       },
       'card.action.trigger': async (data: any) => {
         try {
+          const access = checkAccess(this.config.accessControl, {
+            chatId: data.context?.open_chat_id || data.open_chat_id,
+            senderOpenId: data.operator?.open_id || data.open_id,
+          });
+          if (!access.allowed) {
+            console.warn(
+              `[agy-lark] 已拒绝白名单外卡片操作: operator=${data.operator?.open_id || data.open_id || 'unknown'} ` +
+                `chat=${data.context?.open_chat_id || data.open_chat_id || 'unknown'} (${access.reason})`
+            );
+            return { toast: { type: 'error', content: '无权限：当前用户或会话不在访问控制白名单内' } };
+          }
           const res = await handleCardAction(data, {
             workspace: this.workspace,
             sessions: this.sessions,
             agyBinary: this.config.agy.binary || 'agy',
             defaultModel: this.config.agy.defaultModel,
             quota: this.config.agy.quota,
+            taskManager: this.dispatcher.getTaskManager(),
+            config: this.config,
           });
           return res;
         } catch (err) {
@@ -140,6 +154,19 @@ export class LarkBridgeService {
     console.log('[agy-lark] 正在建立飞书 WebSocket 长连接...');
     await this.wsClient.start({ eventDispatcher });
     console.log('[agy-lark] 飞书服务启动成功！已监听消息与卡片交互事件。');
+
+    if (this.config.accessControl?.enabled) {
+      const ac = this.config.accessControl;
+      console.log(
+        `🛡 访问控制: 已启用 (白名单 ${ac.allowUsers?.length || 0} 个用户 / ${ac.allowChats?.length || 0} 个会话)，` +
+          `白名单外请求将被忽略`
+      );
+    } else {
+      console.log(
+        '⚠️ 访问控制: 未启用 —— 任何能给机器人发消息的用户都可以驱动本机执行引擎 (agy/pi)，' +
+          '建议在 config.json 中配置 accessControl 白名单'
+      );
+    }
 
     // 预热模型列表与额度缓存，并定期后台刷新。
     // `agy models` 实测耗时 ~3.7s、额度取数走一次 HTTPS，均超过飞书卡片回调的 3 秒上限，
@@ -174,13 +201,15 @@ export class LarkBridgeService {
   /** 预热模型列表与额度缓存（失败不影响服务，只记日志）。 */
   private async prewarmCaches(): Promise<void> {
     const startedAt = Date.now();
-    const [models, quota] = await Promise.all([
+    const isAgyQuotaEnabled = !!this.config.agy?.quota?.enabled;
+    const [agyModels, piModels, quota] = await Promise.all([
       fetchAvailableModels(this.config.agy.binary || 'agy').catch(() => undefined),
-      fetchQuotaSummary(this.config.agy.quota).catch(() => undefined),
+      fetchPiModels(this.config.pi).catch(() => undefined),
+      isAgyQuotaEnabled ? fetchQuotaSummary(this.config.agy.quota).catch(() => undefined) : Promise.resolve(undefined),
     ]);
     console.log(
-      `[agy-lark] 缓存预热完成 (${Date.now() - startedAt}ms)：模型 ${models?.length ?? 0} 个，` +
-        `额度 ${quota ? `${quota.groups.length} 组` : '不可用'}`
+      `[agy-lark] 缓存预热完成 (${Date.now() - startedAt}ms)：agy 模型 ${agyModels?.length ?? 0} 个，pi 模型 ${piModels?.length ?? 0} 个，` +
+        `额度 ${quota ? `${quota.groups.length} 组` : (isAgyQuotaEnabled ? '不可用' : '未启用')}`
     );
   }
 

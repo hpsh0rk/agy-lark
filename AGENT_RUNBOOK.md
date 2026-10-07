@@ -129,9 +129,21 @@
     "https": "http://127.0.0.1:7890",
     "all": "",
     "no": "127.0.0.1,localhost,::1"
+  },
+  "accessControl": {
+    "enabled": false,
+    "allowUsers": [],
+    "allowChats": [],
+    "notifyDenied": false
   }
 }
 ```
+
+> 💡 **访问控制（`accessControl`，可选但强烈建议）**：机器人以 YOLO 模式驱动本机 `agy` / `pi`
+> 执行引擎，任何能向机器人发消息的用户都可以触发本机命令执行。`enabled: true` 后仅
+> `allowUsers`（用户 `open_id`）或 `allowChats`（会话 `chat_id`）命中白名单的请求会被处理，
+> 其余一律**静默忽略**（fail-closed，两个白名单均为空同样全拒）。被拒的 open_id 会记录在
+> 服务日志中，按需加白即可；`notifyDenied: true` 会向被拒者回复提示卡片（默认关闭避免刷屏）。
 
 > 💡 **出网代理（`proxy`，可选）**：`agy` 是 Go 二进制、额度取数走 `curl`，两者都只认
 > `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` 环境变量，不读 macOS 系统代理设置。交互式

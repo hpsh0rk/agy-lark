@@ -5,5 +5,7 @@ export * from './models.js';
 export * from './quota.js';
 export * from './image-harvester.js';
 export * from './runner.js';
+export * from './pi-runner.js';
 export * from './sessions.js';
 export * from './config.js';
+export * from './task-manager.js';

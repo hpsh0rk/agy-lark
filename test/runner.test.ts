@@ -1,6 +1,40 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { runAgy } from '../src/core/runner.js';
+import { runAgy, resolveAgyBinary, buildAgyEnvironment, summarizeToolCall } from '../src/core/runner.js';
+
+test('runner: 工具调用描述与环境解析单元测试', async (t) => {
+  await t.test('summarizeToolCall: 常见工具参数格式化与截断', () => {
+    assert.equal(summarizeToolCall(), '思考与分析需求');
+    assert.equal(summarizeToolCall('other_tool'), '调用 other_tool');
+    assert.equal(
+      summarizeToolCall('run_command', { CommandLine: 'find . -name "*.md"' }),
+      '执行命令 `find . -name "*.md"`'
+    );
+    assert.equal(
+      summarizeToolCall('view_file', { AbsolutePath: '/User/sh0rk/project/src/index.ts' }),
+      '查看文件 `src/index.ts`'
+    );
+    assert.equal(
+      summarizeToolCall('replace_file_content', { TargetFile: '/User/sh0rk/project/src/cards.ts' }),
+      '编辑文件 `src/cards.ts`'
+    );
+    assert.equal(
+      summarizeToolCall('grep_search', { query: 'buildStreamingCard' }),
+      '检索 `buildStreamingCard`'
+    );
+    assert.equal(
+      summarizeToolCall('generate_image', { prompt: 'a beautiful sunset over mountains' }),
+      '生成图片: a beautiful sunset over m'
+    );
+  });
+
+  await t.test('resolveAgyBinary 与 buildAgyEnvironment', () => {
+    const resolved = resolveAgyBinary();
+    assert.ok(resolved.includes('agy'));
+    const env = buildAgyEnvironment();
+    assert.ok(env.PATH && env.PATH.length > 0);
+  });
+});
 
 test('runner: 端到端测试套件', { concurrency: false }, async (t) => {
   await t.test('单轮问答与用量捕获', async () => {
@@ -49,6 +83,26 @@ test('runner: 端到端测试套件', { concurrency: false }, async (t) => {
     assert.equal(r2.status, 'SUCCESS');
     assert.ok(r2.response.includes('火星探索'), `第二轮应续聊同一会话并答出暗号，实际输出: ${r2.response}`);
     assert.equal(r2.conversationId, convId, '两轮会话 ID 应当一致');
+  });
+
+  await t.test('非法模型错误拒绝与异常信息提取', async () => {
+    await assert.rejects(
+      async () => {
+        await runAgy({
+          prompt: 'test',
+          cwd: process.cwd(),
+          model: 'invalid-model-selection-xyz',
+        });
+      },
+      (err: any) => {
+        assert.equal(err.code, 'E_AGY_RUN_FAILED');
+        assert.ok(
+          err.message.includes('invalid model selection') || err.message.includes('not recognized'),
+          `错误信息中应完整包含 CLI 报错，实际: ${err.message}`
+        );
+        return true;
+      }
+    );
   });
 });
 

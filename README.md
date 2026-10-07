@@ -29,11 +29,13 @@
 │   • SessionStore: Thread ↔ agy conversation_id 持久化映射   │
 │   • ImageHarvester: 监控脑区/临时目录，自动收割生成图片产物 │
 │   • Models & Quota: 动态获取可用模型列表与 Token 统计       │
+│   • PiRunner & AgyRunner: 统一驱动 agy 与 pi 双智能体执行   │
+│   • TaskManager: 后台异步长任务生命周期与精准调度控制       │
 └──────────────────────────────┬──────────────────────────────┘
-                               │ spawn (YOLO + stream-json)
+                               │ spawn (stream-json / ndjson)
                                ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                    Antigravity CLI (agy)                    │
+│             执行引擎：Antigravity CLI (agy) / Pi            │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -41,26 +43,37 @@
 
 ## 核心特性
 
-1. **分层清晰解耦**:
-   - `agy-core`: 纯净的 `agy` 进程驱动、工作区管理、会话持久化与图片收割核心库；同时提供独立的本地终端 CLI (`agy-core`)。
-   - `agy-lark`: 专注飞书业务网关，未来可无缝平移接入 Slack、Discord 等其它渠道。
+1. **双执行引擎驱动 (Dual-Engine Execution)**:
+   - **`agy` (Antigravity CLI)**: 深度集成 Google DeepMind CLI，支持 Gemini 3.8 / Claude 4.6 / GPT 模型体系与 Google Cloud 额度监控，具备自主工具闭环与多轮续聊能力。
+   - **`pi` (Pi Coding Agent)**: 轻量高速编程智能体，原生支持第三方 OpenAI 兼容 API、本地模型网关（如 `localhost:7863`）与多模型推理。
+   - **`/engine` 交互式卡片一键切换**: 飞书 Card 2.0 按钮切换当前会话引擎，自动执行跨引擎模型纠偏与隔离机制（`resolveModelForEngine`，见 `src/core/models.ts`），彻底杜绝跨引擎模型配置污染。
 2. **多轮对话与 Thread 强隔离**:
    - **私聊**: 单聊 `chat_id` 维护主会话上下文。
-   - **群聊**: 机器人一律在话题（Thread）中流式回复（`reply_in_thread: true`），同一个 Thread 内所有成员的追问共享同一个 `agy` 上下文，不同 Thread 绝不串台，大群主屏永不刷屏。
-3. **交互式飞书卡片指令**:
-   - `/bind`: 弹出交互卡片，支持下拉直接切换已有项目、回复 `/bind add <别名> <路径>` 关联已有项目、一键在 `~/project` 下新建项目（`/bind create`）、安全二次确认删除别名（`/bind delete`）。
-   - `/model`: 动态展示 `agy models` 支持的所有大模型（Gemini 3.8、Claude 4.6、GPT-OSS 等），支持卡片内一键切换并展示当前会话 Token 消耗。
+   - **群聊**: 机器人一律在话题（Thread）中流式回复（`reply_in_thread: true`），同一个 Thread 内所有成员的追问共享同一会话上下文，不同 Thread 绝不串台，大群主屏永不刷屏。
+3. **后台异步长任务管理 (`/tasks`)**:
+   - **不限时执行保障**: 支持运行数小时的超长研发任务（`timeoutMs: 0`），后台稳定承载，彻底告别超时强杀。
+   - **可视化任务看板**: 发送 `/tasks` 即可查看所有正在运行的后台长任务、耗时统计与关联项目。
+   - **精准任务熔断**: 支持在卡片中一键中止特定任务，或在聊天中发送 `/stop [taskId]` 中止执行。
+4. **多模态图文混排与产物收割**:
+   - **多模态输入支持**: 飞书发送纯图片或富文本图文混排（`post` 类型）时，自动下载至沙箱环境，`agy` 结合工具查看，`pi` 原生通过 `@image` 多模态输入无缝解析。
+   - **产物自动收割**: 自动监控收割智能体在脑区或工作区生成的图片产物，上传飞书素材库并以高清原生 `img` 组件渲染展示。
+5. **交互式飞书 Card 2.0 指令**:
+   - `/engine`: 弹出引擎管理面板，按钮一键在 `agy` 与 `pi` 之间秒级切换。
+   - `/bind`: 弹出交互卡片，支持下拉切换已有项目、回复 `/bind add <别名> <路径>` 关联已有物理目录、一键新建项目（`/bind create`）、安全删除映射（`/bind delete`）。
+   - `/model`: 动态展示当前引擎适配的所有大模型，支持下拉一键切换并展示当前会话 Token 消耗。`agy` 引擎下还会实时展示 Google Cloud 每周与 5 小时双配额进度条。
+   - `/tasks`: 展开后台异步长任务控制看板。
    - `/new` / `/reset`: 清空当前 Thread 的上下文记忆，开启新轮次。
    - `/pwd` / `/cd`: 查看和临时切换物理工作目录。
-   - `/config`: 查看与修改全局配置（例如默认新建项目目录）。
+   - `/config`: 查看与修改全局配置（例如默认新建项目目录、默认引擎）。
    - `/status`: 实时查看当前任务活跃状态、耗时与累计用量。
-   - `/stop`: 紧急中止（killProcessTree）当前正在执行的 `agy` 进程。
+   - `/stop`: 紧急中止当前会话正在执行的任务。
    - `/help`: 弹出图文并茂的使用指引卡片。
-4. **图片生成自动收割与预览**:
-   - 自动监听收割 `agy` 在脑区目录（`~/.gemini/antigravity-cli/brain/<conv_id>`）和 `scratch` 生成的图片文件。
-   - 自动上传至飞书 OpenAPI 并以卡片 `img` 原生组件嵌入展示，支持飞书客户端内点击高清放大预览。
-5. **YOLO 模式执行**:
-   - 默认启用 `--dangerously-skip-permissions`，让 `agy` 自动执行工具调用，避免非交互终端挂死。
+6. **YOLO 模式执行**:
+   - 默认启用 `--dangerously-skip-permissions`，工具调用全程自主闭环，避免非交互终端挂死。
+   - ⚠️ **风险提示**: YOLO 模式意味着智能体可以在你的机器上**无确认执行任意命令**。机器人一旦被添加到群聊或被陌生人私聊，等同于把本机 shell 交给了对方。请务必启用 **访问控制白名单**（见下方 `accessControl` 配置）将可用范围收敛到自己的 open_id / 指定群聊。
+7. **访问控制白名单 (`accessControl`)**:
+   - 在 `config.json` 中配置允许的用户 `open_id` 与群聊 `chat_id` 白名单，白名单外的消息与卡片交互一律**静默忽略**（fail-closed）。
+   - 白名单外的 open_id 会被记录到服务日志，方便管理员按需加白。
 
 ---
 
@@ -77,6 +90,9 @@ npm run build
 
 # 一键运行运行环境与飞书凭据自检 (Pre-flight Check)
 npm run verify
+
+# 启用 pre-commit 密钥扫描防线（防止真实凭据误入 git 历史）
+npm run hooks
 ```
 
 ### 2. 飞书开放平台配置（3 分钟完成）
@@ -99,7 +115,7 @@ npm run verify
 ```bash
 cp config.example.json config.json
 ```
-修改 `config.json` 中的 `appId` 和 `appSecret`：
+修改 `config.json`（已做好敏感信息隔离，`config.json` 默认被 `.gitignore` 忽略）：
 ```json
 {
   "lark": {
@@ -111,9 +127,34 @@ cp config.example.json config.json
     "projects": {
       "agy-lark": "~/project/agy-lark"
     }
+  },
+  "engine": "agy",
+  "pi": {
+    "binary": "pi",
+    "provider": "",
+    "defaultModel": "",
+    "thinking": "high",
+    "timeoutMs": 0
+  },
+  "agy": {
+    "binary": "agy",
+    "defaultModel": "",
+    "effort": "high",
+    "timeoutMs": 0,
+    "quota": {
+      "enabled": true
+    }
+  },
+  "accessControl": {
+    "enabled": true,
+    "allowUsers": ["ou_your_open_id"],
+    "allowChats": [],
+    "notifyDenied": false
   }
 }
 ```
+
+> 🛡 **强烈建议启用 `accessControl`**：把 `allowUsers` 设为你自己的 open_id（首次启动后向机器人发条消息，服务日志会打印访客的 open_id），避免机器人被拉群后任何人都能驱动你的本机执行引擎。
 
 启动飞书桥接服务：
 ```bash

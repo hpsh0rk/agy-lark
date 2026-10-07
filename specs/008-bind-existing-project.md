@@ -46,7 +46,7 @@
 ```
 示例：
 - `/bind add my-web ~/project/my-web`
-- `/bind add backend /Users/sh0rk/code/backend`
+- `/bind add backend ~/code/backend`
 
 参数校验：
 - 参数不足（少于 2 个参数）时，返回 status 为 error 的卡片，文本提示：

@@ -1,7 +1,7 @@
 {
   "name": "agy-lark",
   "version": "1.0.0",
-  "description": "Bridge between Lark (Feishu) and Antigravity CLI (agy)",
+  "description": "Bridge between Lark (Feishu) and Antigravity CLI (agy) / Pi coding agent: WebSocket long connection, thread-isolated streaming cards, multi-project workspace, model switching & quota display",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
@@ -11,6 +11,7 @@
   "scripts": {
     "build": "tsc",
     "verify": "node bin/verify.js",
+    "hooks": "git config core.hooksPath .githooks",
     "prelark": "npm run build",
     "lark": "node bin/agy-lark.js",
     "prestart": "npm run build",

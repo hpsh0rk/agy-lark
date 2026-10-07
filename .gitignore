@@ -16,7 +16,11 @@ config.*.json
 
 # Runtime caches & logs
 .agy-lark/
+.agy-images/
 *.log
+
+# Internal agent handoff notes (auto-generated working state)
+handoff.md
 
 # OS & Editor files
 .DS_Store

@@ -59,14 +59,32 @@ export function loadBridgeConfig(customPath?: string): BridgeConfig {
       defaultRoot: fileConfig.workspace?.defaultRoot || path.join(home, 'project'),
       projects: fileConfig.workspace?.projects || {},
     },
+    engine: (fileConfig.engine as any) || 'agy',
     agy: {
       binary: fileConfig.agy?.binary || 'agy',
       defaultModel: fileConfig.agy?.defaultModel || '',
       effort: (fileConfig.agy?.effort as any) || 'high',
-      timeoutMs: fileConfig.agy?.timeoutMs || 600000,
+      timeoutMs: fileConfig.agy?.timeoutMs !== undefined ? fileConfig.agy.timeoutMs : 0,
       quota: fileConfig.agy?.quota ? { ...fileConfig.agy.quota } : undefined,
     },
+    pi: fileConfig.pi
+      ? {
+          binary: fileConfig.pi.binary || 'pi',
+          provider: fileConfig.pi.provider || '',
+          defaultModel: fileConfig.pi.defaultModel || '',
+          thinking: (fileConfig.pi.thinking as any) || 'high',
+          timeoutMs: fileConfig.pi.timeoutMs !== undefined ? fileConfig.pi.timeoutMs : 0,
+        }
+      : undefined,
     proxy: fileConfig.proxy ? { ...fileConfig.proxy } : undefined,
+    accessControl: fileConfig.accessControl
+      ? {
+          enabled: fileConfig.accessControl.enabled ?? false,
+          allowUsers: fileConfig.accessControl.allowUsers ?? [],
+          allowChats: fileConfig.accessControl.allowChats ?? [],
+          notifyDenied: fileConfig.accessControl.notifyDenied ?? false,
+        }
+      : undefined,
   };
 }
 
